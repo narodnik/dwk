@@ -2,8 +2,10 @@
 import argparse
 import darkwiki
 import hashlib
+import json
 import os
 import sys
+import time
 from collections import defaultdict
 from enum import Enum
 
@@ -76,6 +78,8 @@ class DiskDatabase:
         data = data[len(header) + 1:]
         if data_type == DataType.TREE:
             data = self._deserialize_tree(data)
+        elif data_type == DataType.COMMIT:
+            data = self._deserialize_commit(data)
         return data_type, data
 
     def _deserialize_tree(self, data):
@@ -83,7 +87,16 @@ class DiskDatabase:
         data = data[:-1]
         data = data.decode().split('\n')
         data = [row.split(' ') for row in data]
-        return data
+
+        result = []
+        for row in data:
+            mode, object_type, ident, filename = row
+            object_type = DataType[object_type]
+            result.append((mode, object_type, ident, filename))
+        return result
+
+    def _deserialize_commit(self, data):
+        return json.loads(data.decode())
 
     def object_type(self, ident):
         return self.fetch(ident)[0]
@@ -108,7 +121,7 @@ class DiskDatabase:
         return index
 
     def _create_subtrees(self, index):
-        index = [(ident, filename) for _, object_type, ident, filename
+        index = [(mode, ident, filename) for mode, object_type, ident, filename
                  in index if object_type == DataType.BLOB]
 
         root = darkwiki.build_tree(index)
@@ -116,13 +129,21 @@ class DiskDatabase:
         for directory in darkwiki.walk_tree(root):
             assert not [subdir for subdir in directory.subdirs
                         if subdir.ident is None]
+            description = ''
 
-            for ident, filename in directory.files:
-                print('adding:', ident, filename)
+            for mode, ident, filename in directory.files:
+                description += '%s BLOB %s %s\n' % (mode, ident, filename)
             for subdir in directory.subdirs:
-                print('adding subdirs:', subdir.full_path)
-            # write this index
-            # set the ident
+                description += '755 TREE %s %s\n' % (subdir.ident, subdir.name)
+            print('==============')
+            print(directory.full_path)
+            print(description)
+            print('==============')
+            # Write this index
+            data = description.encode()
+            ident = self._add_data(data, DataType.TREE)
+            # Set the ident
+            directory.ident = ident
 
         return root.ident
 
@@ -143,12 +164,29 @@ class DiskDatabase:
         filename = os.path.relpath(filename, self._root_path)
         self.update_index('644', ident, filename)
 
+    def _last_commit_ident(self):
+        # lookup from ref in HEAD
+        return 'hello'
+
     def commit(self):
         # write_tree()
         root_tree_ident = self.write_tree()
-        # make commit object
-        # ... with pointer to tree
-        # ... and timestamp
+        # Make commit object
+        utc_offset = time.localtime().tm_gmtoff
+        unix_time = int(time.time())
+        commit = {
+            # ... with pointer to tree
+            'tree': root_tree_ident,
+            # ... and timestamp
+            'timestamp': unix_time,
+            'utc_offset': utc_offset,
+            # Previous commit
+            'previous_commit': self._last_commit_ident()
+            # later we will add hash of pubkey for ID
+        }
+        data = json.dumps(commit).encode()
+        commit_ident = self._add_data(data, DataType.COMMIT)
+        print('commit:', commit_ident)
         # lookup current ref in HEAD
         # update refs/<...>
 
@@ -276,9 +314,10 @@ def show_file(parser):
     if data_type == DataType.BLOB:
         print(data.decode('utf-8'))
     elif data_type == DataType.TREE:
-        for mode, ident, filename in data:
-            object_type = db.object_type(ident)
+        for mode, object_type, ident, filename in data:
             print(mode, object_type.name, ident, filename)
+    elif data_type == DataType.COMMIT:
+        print(json.dumps(data, indent=2))
 
     return 0
 

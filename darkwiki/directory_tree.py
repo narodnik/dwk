@@ -22,10 +22,10 @@ class DirectoryTree:
         self.subdirs.append(subdir)
         subdir.parent = self
 
-    def add_file(self, ident, filename):
-        assert ident not in [ident for ident, _ in self.files]
-        assert filename not in [filename for _, filename in self.files]
-        self.files.append((ident, filename))
+    def add_file(self, mode, ident, filename):
+        assert ident not in [ident for _, ident, _ in self.files]
+        assert filename not in [filename for _, _, filename in self.files]
+        self.files.append((mode, ident, filename))
 
     def _find_or_create_impl(self, path_split):
         if not path_split:
@@ -50,7 +50,7 @@ class DirectoryTree:
         return self._find_or_create_impl(split_path(path))
 
 def walk_tree(root_node):
-    for child in node.subdirs:
+    for child in root_node.subdirs:
         for node in walk_tree(child):
             yield node
     yield root_node
@@ -64,10 +64,11 @@ def split_path(path):
 
 def build_tree(index):
     root = DirectoryTree()
-    for ident, filename in index:
+    for mode, ident, filename in index:
         prefix = os.path.dirname(filename)
         subdir = root.find_or_create_subdir(prefix)
-        subdir.add_file(ident, filename)
+        filename = os.path.basename(filename)
+        subdir.add_file(mode, ident, filename)
     return root
 
 if __name__ == '__main__':
@@ -86,17 +87,17 @@ if __name__ == '__main__':
     bar.add_subdir(b2)
 
     zz = root.find_or_create_subdir('foo/zz')
-    zz.add_file('ident_abc', 'abc.txt')
-    zz.add_file('ident_test123', 'test123.txt')
-    zz.add_file('ident_zz', 'zz.txt')
+    zz.add_file('644', 'ident_abc', 'abc.txt')
+    zz.add_file('644', 'ident_test123', 'test123.txt')
+    zz.add_file('644', 'ident_zz', 'zz.txt')
 
     ab = root.find_or_create_subdir('foo/zz/abab')
-    ab.add_file('ident_ab', 'ab.txt')
+    ab.add_file('644', 'ident_ab', 'ab.txt')
 
     aha = root.find_or_create_subdir('ahafoo/zz/abab')
-    aha.add_file('aha_id', 'aha.jpg')
-    aha.add_file('aha_id1', 'aha1.jpg')
-    aha.add_file('aha_id2', 'aha2.jpg')
+    aha.add_file('644', 'aha_id', 'aha.jpg')
+    aha.add_file('644', 'aha_id1', 'aha1.jpg')
+    aha.add_file('644', 'aha_id2', 'aha2.jpg')
 
     for directory in walk_tree(root):
         print(directory.full_path)
