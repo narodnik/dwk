@@ -301,6 +301,16 @@ class Interface:
 
         return differentiator.results()
 
+    def add_changed_files(self):
+        # Loop through files in index
+        for mode, ident, filename in self._db.read_index():
+            file_ident = self._db.hash_file(filename)
+            # Skip unchanged files
+            if file_ident == ident:
+                continue
+            # Add changed file
+            self._db.add_file(filename)
+
 class DifferenceInterfaceDisk:
 
     def __init__(self, db):
@@ -327,11 +337,6 @@ class DifferenceInterfaceDisk:
         contents = self._db.open_file(filename, 'r').read()
         contents = contents.decode()
         return contents
-
-class DifferenceBase:
-
-    def __init__(self, db):
-        self._db = db
 
 class DifferenceInterfaceIndex:
 
@@ -559,6 +564,7 @@ def main():
 
     # commit
     parser_commit = subparsers.add_parser('commit')
+    parser_commit.add_argument('-a', '--all', action='store_true')
     parser_commit.set_defaults(func=commit)
 
     # log
@@ -675,6 +681,9 @@ def show_type(parser):
 
 def commit(parser):
     db = DiskDatabase()
+    if parser.all:
+        interface = Interface(db)
+        interface.add_changed_files()
     db.commit()
 
 def log(parser):
