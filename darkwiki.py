@@ -281,16 +281,85 @@ class Interface:
         return tree
 
     def diff_cached(self, commit_ident):
-        # diff current index state and files with commit ident
+        interface_commit = DifferenceInterfaceCommit(self._db, commit_ident)
+        interface_index = DifferenceInterfaceIndex(self._db)
+
+        differentiator = DifferenceEngine(interface_commit, interface_index)
+
+        return differentiator.results()
+
+    def diff_noncached(self, commit_ident):
+        if commit_ident is not None:
+            interface_previous = DifferenceInterfaceCommit(
+                self._db, commit_ident)
+        else:
+            interface_previous = DifferenceInterfaceIndex(self._db)
+
+        interface_disk = DifferenceInterfaceDisk(self._db)
+
+        differentiator = DifferenceEngine(interface_previous, interface_disk)
+
+        return differentiator.results()
+
+class DifferenceInterfaceDisk:
+
+    def __init__(self, db):
+        self._db = db
+        self._ident_map = {}
+        self._files = self._files_list()
+
+    def _files_list(self):
+        # Use filenames from index as list of files
+        filenames = [filename for _, _, filename in self._db.read_index()]
+        files = []
+        for filename in filenames:
+            ident = self._db.hash_file(filename)
+            files.append(('644', ident, filename))
+            self._ident_map[ident] = filename
+        return files
+
+    def files_list(self):
+        return self._files
+
+    def fetch(self, ident):
+        assert ident in self._ident_map
+        filename = self._ident_map[ident]
+        contents = self._db.open_file(filename, 'r').read()
+        contents = contents.decode()
+        return contents
+
+class DifferenceBase:
+
+    def __init__(self, db):
+        self._db = db
+
+class DifferenceInterfaceIndex:
+
+    def __init__(self, db):
+        self._db = db
+
+    def files_list(self):
+        # Use files from index as list of files
+        return self._db.read_index()
+
+    def fetch(self, ident):
+        object_type, contents = self._db.fetch(ident)
+        assert object_type == DataType.BLOB
+        contents = contents.decode()
+        return contents
+
+class DifferenceInterfaceCommit:
+
+    def __init__(self, db, commit_ident=None):
+        self._db = db
+        self._tree = self._load_tree_root(commit_ident)
+
+    def _load_tree_root(self, commit_ident):
         if commit_ident is None:
             commit_ident = self._db.last_commit_ident()
+        else:
+            commit_ident = self._db.fuzzy_match(commit_ident)
 
-            if commit_ident is None:
-                return None
-
-        assert commit_ident is not None
-
-        commit_ident = self._db.fuzzy_match(commit_ident)
         assert commit_ident is not None
 
         # Read root tree of commit
@@ -298,81 +367,99 @@ class Interface:
         assert object_type == DataType.COMMIT
 
         tree_root_ident = commit['tree']
-        tree = self._read_tree(tree_root_ident)
+        return self._read_tree(tree_root_ident)
 
-        # Read index
-        index = self._db.read_index()
+    def _read_tree(self, tree_ident, tree_name=None):
+        object_type, tree_contents = self._db.fetch(tree_ident)
+        assert object_type == DataType.TREE
 
+        tree = darkwiki.DirectoryTree(tree_name)
+
+        for mode, object_type, ident, filename in tree_contents:
+            if object_type == DataType.BLOB:
+                tree.add_file(mode, ident, filename)
+            elif object_type == DataType.TREE:
+                subtree = self._read_tree(ident, filename)
+                tree.add_subdir(subtree)
+
+        return tree
+
+    def files_list(self):
+        files_list = [(directory.full_path, directory.files)
+                      for directory in darkwiki.walk_tree(self._tree)]
         results = []
-        # For each file in index
-        for mode, new_ident, filename in index:
-            # Lookup in tree
-            previous_filespec = lookup_file_in_tree(tree, filename)
+        for full_path, dir_files in files_list:
+            for mode, ident, filename in dir_files:
+                if full_path is not None:
+                    filename = os.path.join(full_path, filename)
+                results.append((mode, ident, filename))
+        return results
 
-            # If no previous file, then treat as new addition
-            if previous_filespec is None:
-                object_type, contents = self._db.fetch(new_ident)
-                assert object_type == DataType.BLOB
-                contents = contents.decode()
-                # Fake diff, add whole file
-                diffs = [(1, contents)]
-                results.append((filename, diffs))
-                continue
+    def fetch(self, ident):
+        object_type, contents = self._db.fetch(ident)
+        assert object_type == DataType.BLOB
+        contents = contents.decode()
+        return contents
 
-            _, previous_ident, _ = previous_filespec
+class DifferenceEngine:
+
+    def __init__(self, interface_1, interface_2):
+        self._interface_1 = interface_1
+        self._interface_2 = interface_2
+
+    def results(self):
+        results = []
+
+        files_1 = self._interface_1.files_list()
+        files_2 = self._interface_2.files_list()
+
+        # Rotates a list of lists
+        transpose = lambda list_lists: list(map(list, zip(*list_lists)))
+
+        modes_1, idents_1, filenames_1 = transpose(files_1)
+        modes_2, idents_2, filenames_2 = transpose(files_2)
+
+        exclude_items = lambda files_1, filenames_2: \
+            [(mode, ident, filename) for mode, ident, filename
+             in files_1 if filename not in filenames_2]
+        files_only_in_1 = exclude_items(files_1, filenames_2)
+        files_only_in_2 = exclude_items(files_2, filenames_1)
+
+        for mode, ident, filename in files_only_in_1:
+            contents = self._interface_1.fetch(ident)
+            diffs = [(-1, contents)]
+            results.append((filename, diffs))
+
+        for mode, ident, filename in files_only_in_2:
+            contents = self._interface_2.fetch(ident)
+            diffs = [(1, contents)]
+            results.append((filename, diffs))
+
+        # Get list
+        intersect = lambda list_1, list_2: \
+            [value for value in list_1 if value in list_2]
+        shared_filenames = intersect(filenames_1, filenames_2)
+        shared_files = [(mode, ident, filename) for mode, ident, filename
+                        in files_2 if filename in shared_filenames]
+
+        # Perform main diff
+        for new_mode, new_ident, filename in shared_files:
+            filename_equal = lambda item: item[2] == filename
+
+            previous_file = filter_one(files_1, filename_equal)
+            assert previous_file is not None
+            _, previous_ident, _ = previous_file
 
             # Skip unchanged files
             if previous_ident == new_ident:
                 continue
 
-            object_type, previous_contents = self._db.fetch(previous_ident)
-            assert object_type == DataType.BLOB
-            object_type, new_contents = self._db.fetch(new_ident)
-            assert object_type == DataType.BLOB
-
-            previous_contents = previous_contents.decode()
-            new_contents = new_contents.decode()
+            previous_contents = self._interface_1.fetch(previous_ident)
+            new_contents = self._interface_2.fetch(new_ident)
 
             diffs = darkwiki.difference(previous_contents, new_contents)
 
             # Add to results
-            results.append((filename, diffs))
-
-        for mode, ident, filename in filter_files_from_tree(tree, index):
-            object_type, previous_contents = self._db.fetch(ident)
-            assert object_type == DataType.BLOB
-            previous_contents = previous_contents.decode()
-            # Fake diff, remove whole file
-            diffs = [(-1, previous_contents)]
-            results.append((filename, diffs))
-
-        # Return results
-        return results
-
-    def diff_noncached(self, commit_ident):
-        modified_files = []
-
-        # Read index
-        index = self._db.read_index()
-
-        results = []
-
-        # For each file in index
-        for mode, index_ident, filename in index:
-            disk_ident = self._db.hash_file(filename)
-
-            if disk_ident == index_ident:
-                continue
-
-            # Mismatch found. Perform diff
-            object_type, indexed_contents = self._db.fetch(index_ident)
-            assert object_type == DataType.BLOB
-            indexed_contents = indexed_contents.decode()
-
-            new_contents = self._db.open_file(filename, 'r').read()
-            new_contents = new_contents.decode()
-
-            diffs = darkwiki.difference(indexed_contents, new_contents)
             results.append((filename, diffs))
 
         return results
