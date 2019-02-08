@@ -280,6 +280,9 @@ class Interface:
 
         assert commit_ident is not None
 
+        commit_ident = self._db.fuzzy_match(commit_ident)
+        assert commit_ident is not None
+
         # Read root tree of commit
         object_type, commit = self._db.fetch(commit_ident)
         assert object_type == DataType.COMMIT
@@ -292,32 +295,66 @@ class Interface:
 
         results = []
         # For each file in index
-        for mode, ident, filename in index:
+        for mode, new_ident, filename in index:
             # Lookup in tree
-            filespec = lookup_file_in_tree(tree, filename)
-            if filespec is None:
-                diff = 'foo'
+            previous_filespec = lookup_file_in_tree(tree, filename)
+
+            # If no previous file, then treat as new addition
+            if previous_filespec is None:
+                object_type, contents = self._db.fetch(new_ident)
+                assert object_type == DataType.BLOB
+                contents = contents.decode()
+                # Fake diff, add whole file
+                diffs = [(1, contents)]
+                results.append((filename, diffs))
                 continue
 
-            # If ident doesn't match, perform diff
-            if filespec[1] == ident:
+            _, previous_ident, _ = previous_filespec
+
+            # Skip unchanged files
+            if previous_ident == new_ident:
                 continue
 
-            print(filename, 'doesnt match')
-            diff = 'foo - foo'
+            object_type, previous_contents = self._db.fetch(previous_ident)
+            assert object_type == DataType.BLOB
+            object_type, new_contents = self._db.fetch(new_ident)
+            assert object_type == DataType.BLOB
+
+            previous_contents = previous_contents.decode()
+            new_contents = new_contents.decode()
+
+            diffs = darkwiki.difference(previous_contents, new_contents)
 
             # Add to results
-            results.append(diff)
+            results.append((filename, diffs))
+
+        for mode, ident, filename in filter_files_from_tree(tree, index):
+            object_type, previous_contents = self._db.fetch(ident)
+            assert object_type == DataType.BLOB
+            previous_contents = previous_contents.decode()
+            # Fake diff, remove whole file
+            diffs = [(-1, previous_contents)]
+            results.append((filename, diffs))
 
         # Return results
         return results
+
+def select_directory(tree_root, file_path):
+    if not file_path:
+        return tree_root
+
+    match_dir = filter_one(darkwiki.walk_tree(tree_root),
+                           lambda directory: directory.full_path == file_path)
+    if match_dir is None:
+        return None
+
+    return match_dir
 
 def lookup_file_in_tree(tree_root, filename):
     file_path = os.path.dirname(filename)
     file_base = os.path.basename(filename)
 
-    match_dir = filter_one(darkwiki.walk_tree(tree_root),
-                           lambda directory: directory.full_path == file_path)
+    match_dir = select_directory(tree_root, file_path)
     if match_dir is None:
         return None
 
@@ -327,6 +364,21 @@ def lookup_file_in_tree(tree_root, filename):
         return None
 
     return match_file
+
+def filter_files_from_tree(tree_root, index):
+    index_filenames = [filename for mode, ident, filename in index]
+
+    files_list = [(directory.full_path, directory.files)
+                  for directory in darkwiki.walk_tree(tree_root)]
+
+    results = []
+    for full_path, dir_files in files_list:
+        for mode, ident, filename in dir_files:
+            if full_path is not None:
+                filename = os.path.join(full_path, filename)
+            if filename not in index_filenames:
+                results.append((mode, ident, filename))
+    return results
 
 def main():
     parser = argparse.ArgumentParser(prog='darkwiki')
@@ -513,8 +565,9 @@ def diff(parser):
     db = DiskDatabase()
     interface = Interface(db)
     diff_result = interface.diff_cached(parser.commit_ident)
-    for row in diff_result:
-        print(row)
+    for filename, diffs in diff_result:
+        print('---', filename)
+        darkwiki.print_diff(diffs)
 
 if __name__ == '__main__':
     sys.exit(main())

@@ -1,4 +1,5 @@
 import diff_match_patch as dmp_module
+from termcolor import colored
 
 dmp = dmp_module.diff_match_patch()
 
@@ -98,8 +99,6 @@ def difference(base_text_1, text_2):
     return diffs
 
 if __name__ == '__main__':
-    from termcolor import colored
-
     text_1 = """
 I am the very model of a modern Major-General,
 I've information vegetable, animal, and mineral,
