@@ -58,8 +58,15 @@ class DiskDatabase:
     def _ref_path(self, ref):
         return os.path.join(self._dot_path, ref)
 
-    def _open(self, ident, flag):
+    def _open_object(self, ident, flag):
         return open(os.path.join(self._objects_path, ident), flag + 'b')
+
+    def open_file(self, filename, flag):
+        return open(os.path.join(self._root_path, filename), flag + 'b')
+
+    def transform_relative_path(self, filename):
+        filename = os.path.abspath(filename)
+        return os.path.relpath(filename, self._root_path)
 
     def initialize(self):
         os.mkdir(self._objects_path)
@@ -69,7 +76,7 @@ class DiskDatabase:
 
     def _add_data(self, data, data_type):
         ident = hashlib.sha256(data).hexdigest()
-        with self._open(ident, 'w') as file_handle:
+        with self._open_object(ident, 'w') as file_handle:
             header = '%s:' % data_type.name
             file_handle.write(header.encode())
             file_handle.write(data)
@@ -78,11 +85,14 @@ class DiskDatabase:
     def add_blob(self, data):
         return self._add_data(data, DataType.BLOB)
 
+    def hash_file(self, filename):
+        data = self.open_file(filename, 'r').read()
+        ident = hashlib.sha256(data).hexdigest()
+        return ident
+
     def add_file(self, filename):
-        data = open(filename, 'rb').read()
+        data = self.open_file(filename, 'r').read()
         ident = self.add_blob(data)
-        # filename relative to root
-        filename = os.path.relpath(filename, self._root_path)
 
         self.update_index('644', ident, filename)
 
@@ -97,7 +107,7 @@ class DiskDatabase:
         return match[0]
 
     def fetch(self, ident):
-        data = self._open(ident, 'r').read()
+        data = self._open_object(ident, 'r').read()
         header = data.split(b':')[0]
         data_type = DataType[header.decode()]
         data = data[len(header) + 1:]
@@ -339,6 +349,34 @@ class Interface:
         # Return results
         return results
 
+    def diff_noncached(self, commit_ident):
+        modified_files = []
+
+        # Read index
+        index = self._db.read_index()
+
+        results = []
+
+        # For each file in index
+        for mode, index_ident, filename in index:
+            disk_ident = self._db.hash_file(filename)
+
+            if disk_ident == index_ident:
+                continue
+
+            # Mismatch found. Perform diff
+            object_type, indexed_contents = self._db.fetch(index_ident)
+            assert object_type == DataType.BLOB
+            indexed_contents = indexed_contents.decode()
+
+            new_contents = self._db.open_file(filename, 'r').read()
+            new_contents = new_contents.decode()
+
+            diffs = darkwiki.difference(indexed_contents, new_contents)
+            results.append((filename, diffs))
+
+        return results
+
 def select_directory(tree_root, file_path):
     if not file_path:
         return tree_root
@@ -442,6 +480,7 @@ def main():
 
     # diff
     parser_diff = subparsers.add_parser('diff')
+    parser_diff.add_argument('--cached', action='store_true')
     parser_diff.add_argument('commit_ident', nargs='?', default=None)
     parser_diff.set_defaults(func=diff)
 
@@ -469,12 +508,16 @@ def add_object(parser):
 
 def simple_add(parser):
     db = DiskDatabase()
-    db.add_file(parser.filename)
+    # filename relative to root
+    filename = db.transform_relative_path(parser.filename)
+    db.add_file(filename)
     return 0
 
 def simple_rm(parser):
     db = DiskDatabase()
-    db.remove_from_index(parser.filename)
+    # filename relative to root
+    filename = db.transform_relative_path(parser.filename)
+    db.remove_from_index(filename)
     return 0
 
 def list_objects(parser):
@@ -564,7 +607,10 @@ def log(parser):
 def diff(parser):
     db = DiskDatabase()
     interface = Interface(db)
-    diff_result = interface.diff_cached(parser.commit_ident)
+    if parser.cached:
+        diff_result = interface.diff_cached(parser.commit_ident)
+    else:
+        diff_result = interface.diff_noncached(parser.commit_ident)
     for filename, diffs in diff_result:
         print('---', filename)
         darkwiki.print_diff(diffs)
