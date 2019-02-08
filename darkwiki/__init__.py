@@ -1,3 +1,4 @@
+from darkwiki.crypto import *
 from darkwiki.diff import difference, three_way_merge, print_diff
 from darkwiki.difference_engine import DifferenceInterfaceDisk, \
     DifferenceInterfaceIndex, DifferenceInterfaceCommit, DifferenceEngine
