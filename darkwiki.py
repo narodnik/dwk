@@ -158,15 +158,17 @@ class DiskDatabase:
         open(self._index_filename, 'w').truncate(0)
 
     def read_index(self):
-        with open(self._index_filename, 'r') as file_handle:
-            index = []
-            for line in file_handle:
-                # Strip end newline
-                assert line[-1] == '\n'
-                line = line[:-1]
-                mode, ident, filename = line.split(' ')
-                index.append((mode, ident, filename))
+        index = []
+        for line in open(self._index_filename, 'r'):
+            index.append(self._read_index_line(line))
         return index
+
+    def _read_index_line(self, line):
+        # Strip end newline
+        assert line[-1] == '\n'
+        line = line[:-1]
+        mode, ident, filename = line.split(' ')
+        return mode, ident, filename
 
     def _create_subtrees(self, index):
         root = darkwiki.build_tree(index)
@@ -174,23 +176,30 @@ class DiskDatabase:
         for directory in darkwiki.walk_tree(root):
             assert not [subdir for subdir in directory.subdirs
                         if subdir.ident is None]
-            description = ''
 
-            for mode, ident, filename in directory.files:
-                description += '%s BLOB %s %s\n' % (mode, ident, filename)
-            for subdir in directory.subdirs:
-                description += '755 TREE %s %s\n' % (subdir.ident, subdir.name)
-            #print('==============')
-            #print(directory.full_path)
-            #print(description)
-            #print('==============')
-            # Write this index
-            data = description.encode()
+            data = self._create_tree(directory)
             ident = self._add_data(data, DataType.TREE)
             # Set the ident
             directory.ident = ident
 
         return root.ident
+
+    def _create_tree(self, directory):
+        description = ''
+
+        for mode, ident, filename in directory.files:
+            description += '%s BLOB %s %s\n' % (mode, ident, filename)
+        for subdir in directory.subdirs:
+            description += '755 TREE %s %s\n' % (subdir.ident, subdir.name)
+
+        #print('==============')
+        #print(directory.full_path)
+        #print(description)
+        #print('==============')
+        # Write this index
+
+        data = description.encode()
+        return data
 
     def write_tree(self):
         # Read index and clear
@@ -254,31 +263,20 @@ class Interface:
     def __init__(self, db):
         self._db = db
 
+    def _fetch_commit(self, current_commit_ident):
+        object_type, commit = self._db.fetch(current_commit_ident)
+        commit['ident'] = current_commit_ident
+        assert object_type == DataType.COMMIT
+        current_commit_ident = commit['previous_commit']
+        return current_commit_ident, commit
+
     def fetch_commits(self):
         results = []
-        current_commit_ident = self._db.last_commit_ident()
-        while current_commit_ident is not None:
-            object_type, commit = self._db.fetch(current_commit_ident)
-            commit['ident'] = current_commit_ident
-            assert object_type == DataType.COMMIT
+        commit_ident = self._db.last_commit_ident()
+        while commit_ident is not None:
+            commit_ident, commit = self._fetch_commit(commit_ident)
             results.append(commit)
-            current_commit_ident = commit['previous_commit']
         return results
-
-    def _read_tree(self, tree_ident, tree_name=None):
-        object_type, tree_contents = self._db.fetch(tree_ident)
-        assert object_type == DataType.TREE
-
-        tree = darkwiki.DirectoryTree(tree_name)
-
-        for mode, object_type, ident, filename in tree_contents:
-            if object_type == DataType.BLOB:
-                tree.add_file(mode, ident, filename)
-            elif object_type == DataType.TREE:
-                subtree = self._read_tree(ident, filename)
-                tree.add_subdir(subtree)
-
-        return tree
 
     def diff_cached(self, commit_ident):
         interface_commit = DifferenceInterfaceCommit(self._db, commit_ident)
@@ -290,24 +288,25 @@ class Interface:
 
     def diff_noncached(self, commit_ident):
         if commit_ident is not None:
-            interface_previous = DifferenceInterfaceCommit(
-                self._db, commit_ident)
+            interface_previous = \
+                DifferenceInterfaceCommit(self._db, commit_ident)
         else:
             interface_previous = DifferenceInterfaceIndex(self._db)
 
         interface_disk = DifferenceInterfaceDisk(self._db)
 
         differentiator = DifferenceEngine(interface_previous, interface_disk)
-
         return differentiator.results()
 
     def add_changed_files(self):
         # Loop through files in index
         for mode, ident, filename in self._db.read_index():
             file_ident = self._db.hash_file(filename)
+
             # Skip unchanged files
             if file_ident == ident:
                 continue
+
             # Add changed file
             self._db.add_file(filename)
 
@@ -321,11 +320,14 @@ class DifferenceInterfaceDisk:
     def _files_list(self):
         # Use filenames from index as list of files
         filenames = [filename for _, _, filename in self._db.read_index()]
+
         files = []
         for filename in filenames:
             ident = self._db.hash_file(filename)
             files.append(('644', ident, filename))
+
             self._ident_map[ident] = filename
+
         return files
 
     def files_list(self):
@@ -393,6 +395,9 @@ class DifferenceInterfaceCommit:
         files_list = [(directory.full_path, directory.files)
                       for directory in darkwiki.walk_tree(self._tree)]
         results = []
+        # Todo make a DirectoryFile object with the attribute
+        # full_filename
+        # Then no need for this weird outer loop design
         for full_path, dir_files in files_list:
             for mode, ident, filename in dir_files:
                 if full_path is not None:
@@ -421,94 +426,65 @@ class DifferenceEngine:
         # Rotates a list of lists
         transpose = lambda list_lists: list(map(list, zip(*list_lists)))
 
-        modes_1, idents_1, filenames_1 = transpose(files_1)
-        modes_2, idents_2, filenames_2 = transpose(files_2)
+        _, _, filenames_1 = transpose(files_1)
+        _, _, filenames_2 = transpose(files_2)
 
-        exclude_items = lambda files_1, filenames_2: \
-            [(mode, ident, filename) for mode, ident, filename
-             in files_1 if filename not in filenames_2]
-        files_only_in_1 = exclude_items(files_1, filenames_2)
-        files_only_in_2 = exclude_items(files_2, filenames_1)
+        # Deleted files
+        self._exclusion(results, self._interface_1, files_1, filenames_2, -1)
+        # Added files
+        self._exclusion(results, self._interface_2, files_2, filenames_1, 1)
 
-        for mode, ident, filename in files_only_in_1:
-            contents = self._interface_1.fetch(ident)
-            diffs = [(-1, contents)]
-            results.append((filename, diffs))
-
-        for mode, ident, filename in files_only_in_2:
-            contents = self._interface_2.fetch(ident)
-            diffs = [(1, contents)]
-            results.append((filename, diffs))
-
-        # Get list
-        intersect = lambda list_1, list_2: \
-            [value for value in list_1 if value in list_2]
-        shared_filenames = intersect(filenames_1, filenames_2)
-        shared_files = [(mode, ident, filename) for mode, ident, filename
-                        in files_2 if filename in shared_filenames]
+        shared_files = self._compute_shared_files(
+            files_1, filenames_1, files_2, filenames_2)
 
         # Perform main diff
         for new_mode, new_ident, filename in shared_files:
-            filename_equal = lambda item: item[2] == filename
-
-            previous_file = filter_one(files_1, filename_equal)
-            assert previous_file is not None
-            _, previous_ident, _ = previous_file
-
-            # Skip unchanged files
-            if previous_ident == new_ident:
+            result = self._main_diff(new_mode, new_ident, filename, files_1)
+            if result is None:
                 continue
-
-            previous_contents = self._interface_1.fetch(previous_ident)
-            new_contents = self._interface_2.fetch(new_ident)
-
-            diffs = darkwiki.difference(previous_contents, new_contents)
-
-            # Add to results
-            results.append((filename, diffs))
+            results.append(result)
 
         return results
 
-def select_directory(tree_root, file_path):
-    if not file_path:
-        return tree_root
+    def _exclusion(self, results, interface, files_a, filenames_b, sign):
+        exclude_items = lambda files_a, filenames_b: \
+            [(mode, ident, filename) for mode, ident, filename
+             in files_a if filename not in filenames_b]
 
-    match_dir = filter_one(darkwiki.walk_tree(tree_root),
-                           lambda directory: directory.full_path == file_path)
-    if match_dir is None:
-        return None
+        files_only_in_a = exclude_items(files_a, filenames_b)
 
-    return match_dir
+        for mode, ident, filename in files_only_in_a:
+            contents = interface.fetch(ident)
+            diffs = [(sign, contents)]
+            results.append((filename, diffs))
 
-def lookup_file_in_tree(tree_root, filename):
-    file_path = os.path.dirname(filename)
-    file_base = os.path.basename(filename)
+    def _compute_shared_files(self, files_1, filenames_1, files_2, filenames_2):
+        intersect = lambda list_1, list_2: \
+            [value for value in list_1 if value in list_2]
 
-    match_dir = select_directory(tree_root, file_path)
-    if match_dir is None:
-        return None
+        shared_filenames = intersect(filenames_1, filenames_2)
+        shared_files = [(mode, ident, filename) for mode, ident, filename
+                        in files_2 if filename in shared_filenames]
+        return shared_files
 
-    match_file = filter_one(match_dir.files,
-                            lambda file: file[2] == file_base)
-    if match_file is None:
-        return None
+    def _main_diff(self, new_mode, new_ident, filename, files_1):
+        filename_equal = lambda item: item[2] == filename
 
-    return match_file
+        previous_file = filter_one(files_1, filename_equal)
+        assert previous_file is not None
+        _, previous_ident, _ = previous_file
 
-def filter_files_from_tree(tree_root, index):
-    index_filenames = [filename for mode, ident, filename in index]
+        # Skip unchanged files
+        if previous_ident == new_ident:
+            return None
 
-    files_list = [(directory.full_path, directory.files)
-                  for directory in darkwiki.walk_tree(tree_root)]
+        previous_contents = self._interface_1.fetch(previous_ident)
+        new_contents = self._interface_2.fetch(new_ident)
 
-    results = []
-    for full_path, dir_files in files_list:
-        for mode, ident, filename in dir_files:
-            if full_path is not None:
-                filename = os.path.join(full_path, filename)
-            if filename not in index_filenames:
-                results.append((mode, ident, filename))
-    return results
+        # Perform the diff between both contents
+        diffs = darkwiki.difference(previous_contents, new_contents)
+
+        return filename, diffs
 
 def main():
     parser = argparse.ArgumentParser(prog='darkwiki')
