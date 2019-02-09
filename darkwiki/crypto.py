@@ -1,31 +1,37 @@
-import ecdsa
-import os
-from darkwiki.ecdsa.ecc import ECPubkey, ECPrivkey
+import nacl
+from nacl.public import PrivateKey, PublicKey, Box
 
 def random_secret():
-    return os.urandom(32)
-
-def encrypt(message, public):
-    public_key = ECPubkey(public)
-    return public_key.encrypt_message(message)
-
-def decrypt(cipher, secret):
-    private = ECPrivkey(secret)
-    return private.decrypt_message(cipher)
-
-def sign(message, secret):
-    private = ECPrivkey(secret)
-    return private.sign(message)
-
-def verify(signature, message, public):
-    public_key = ECPubkey(public)
-    try:
-        public_key.verify_message_hash(signature, message)
-    except:
-        return False
-    return True
+    private = PrivateKey.generate()
+    return bytes(private)
 
 def secret_to_public(secret):
-    private = ECPrivkey(secret)
-    return private.get_public_key_bytes()
+    private = PrivateKey(secret)
+    return bytes(private.public_key)
+
+def encrypt_sign(message, secret_origin, public_destination):
+    public = PublicKey(public_destination)
+    private = PrivateKey(secret_origin)
+    box = Box(private, public)
+    return box.encrypt(message)
+
+def decrypt_verify(cipher, public_origin, private_destination):
+    public = PublicKey(public_origin)
+    private = PrivateKey(private_destination)
+    box = Box(private, public)
+    try:
+        return box.decrypt(cipher)
+    except nacl.exceptions.CryptoError:
+        return None
+
+if __name__ == '__main__':
+    secret = random_secret()
+    public = secret_to_public(secret)
+    print(len(secret), len(public))
+
+    message = b'helssdkjsd skslo mdhjdhjsdksddskddsjdkjjk' * 10
+    cipher = encrypt_sign(message, secret, public)
+    message_2 = decrypt_verify(cipher, public, secret)
+    assert type(message_2) == bytes
+    assert message == message_2
 
