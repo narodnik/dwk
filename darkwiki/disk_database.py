@@ -51,8 +51,14 @@ class DiskDatabase:
     def _open_object(self, ident, flag):
         return open(os.path.join(self._objects_path, ident), flag + 'b')
 
+    def transform_root_path(self, filename):
+        return os.path.join(self._root_path, filename)
+
     def open_file(self, filename, flag):
-        return open(os.path.join(self._root_path, filename), flag + 'b')
+        return open(self.transform_root_path(filename), flag + 'b')
+
+    def remove_file(self, filename):
+        os.remove(self.transform_root_path(filename))
 
     def transform_relative_path(self, filename):
         filename = os.path.abspath(filename)
@@ -237,9 +243,9 @@ class DiskDatabase:
         }
         data = json.dumps(commit).encode()
         commit_ident = self._add_data(data, DataType.COMMIT)
-        print('commit:', commit_ident)
 
         self._write_to_ref(commit_ident)
+        return commit_ident
 
     def _write_to_ref(self, commit_ident):
         # lookup current ref in HEAD
@@ -258,7 +264,6 @@ class DiskDatabase:
         return reference[len('refs/heads/'):]
 
     def switch_branch(self, branch_name, commit_ident):
-        self._write_HEAD('refs/heads/%s' % branch_name)
         if commit_ident is not None:
             last_commit = self.last_commit_ident()
 
@@ -266,6 +271,48 @@ class DiskDatabase:
 
             self._update_files(last_commit, commit_ident)
 
+        self._write_HEAD('refs/heads/%s' % branch_name)
+
+    def _fetch_tree_ident(self, commit_ident):
+        object_type, commit = self.fetch(commit_ident)
+        assert object_type == darkwiki.DataType.COMMIT
+        return commit['tree']
+
     def _update_files(self, last_commit, new_commit):
-        pass 
+        previous_tree_ident = self._fetch_tree_ident(last_commit)
+        new_tree_ident = self._fetch_tree_ident(new_commit)
+
+        previous_tree = darkwiki.read_tree(self, previous_tree_ident)
+        new_tree = darkwiki.read_tree(self, new_tree_ident)
+
+        previous_files = darkwiki.all_files(previous_tree)
+        new_files = darkwiki.all_files(new_tree)
+
+        self._remove_old_files(previous_files, new_files)
+        self._add_new_files(new_files)
+        self._remove_empty_directories(previous_tree)
+
+    def _remove_old_files(self, previous_files, new_files):
+        new_filenames = [blob.full_filename for blob in new_files]
+
+        delete_files = [blob_file for blob_file in previous_files
+                         if blob_file.full_filename not in new_filenames]
+        for blob in delete_files:
+            self.remove_file(blob.full_filename)
+
+    def _add_new_files(self, new_files):
+        for blob in new_files:
+            object_type, contents = self.fetch(blob.ident)
+            assert object_type == DataType.BLOB
+            self.open_file(blob.full_filename, 'w').write(contents)
+
+    def _remove_empty_directories(self, previous_tree):
+        # Iterate previous directories, if they are empty then delete them
+        for directory in darkwiki.walk_tree(previous_tree):
+            if directory.full_path is None:
+                continue
+            path = self.transform_root_path(directory.full_path)
+            # If empty directory then delete it
+            if not os.listdir(path):
+                os.rmdir(path)
 

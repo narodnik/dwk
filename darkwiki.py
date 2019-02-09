@@ -187,7 +187,8 @@ def commit(parser):
     if parser.all:
         interface = darkwiki.Interface(db)
         interface.add_changed_files()
-    db.commit()
+    ident = db.commit()
+    print(ident)
     return 0
 
 def log(parser):

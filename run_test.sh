@@ -1,6 +1,7 @@
 #!/bin/bash
 mkdir -p foo/bar/
 mkdir -p xyz
+mkdir -p zzz
 
 echo test123 > foo/bar/test123.txt
 echo bar123 > foo/bar/bar123.txt
@@ -27,14 +28,18 @@ cd ../
 
 #./darkwiki.py read-index
 
-./darkwiki.py commit
+FIRST_COMMIT=$(./darkwiki.py commit)
 
 echo test123_dd > foo/bar/test123.txt
 echo footest_dd > foo/footest.txt
 echo newnew > newnew.txt
 
-./darkwiki.py rm foo/bar/willdel.txt
+echo zzz > zzz/only.txt
 
+./darkwiki.py rm foo/bar/willdel.txt
+./darkwiki.py rm zzz/only.txt
+
+./darkwiki.py add ./zzz/only.txt
 ./darkwiki.py add foo/bar/test123.txt
 ./darkwiki.py add foo/footest.txt
 ./darkwiki.py add newnew.txt
@@ -62,4 +67,7 @@ echo "Cached:"
 echo
 echo "Non-cached diff:"
 ./darkwiki.py diff
+
+echo
+./darkwiki.py branch foo $FIRST_COMMIT
 
