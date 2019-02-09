@@ -74,7 +74,8 @@ class DifferenceInterfaceCommit:
         return darkwiki.read_tree(self._db, tree_root_ident)
 
     def files_list(self):
-        return [blob.attributes() for blob in darkwiki.all_files(self._tree)]
+        return [blob.attributes_fullpath()
+                for blob in darkwiki.all_files(self._tree)]
 
     def fetch(self, ident):
         object_type, contents = self._db.fetch(ident)

@@ -1,3 +1,4 @@
+import darkwiki
 import os
 
 class DirectoryTree:
@@ -23,9 +24,9 @@ class DirectoryTree:
         subdir.parent = self
 
     def add_file(self, mode, ident, filename):
-        assert ident not in [ident for _, ident, _ in self.files]
-        assert filename not in [filename for _, _, filename in self.files]
-        self.files.append((mode, ident, filename))
+        assert not [blob for blob in self.files if blob.ident == ident]
+        assert not [blob for blob in self.files if blob.filename == filename]
+        self.files.append(BlobFile(mode, ident, filename, self))
 
     def _find_or_create_impl(self, path_split):
         if not path_split:
@@ -49,6 +50,29 @@ class DirectoryTree:
     def find_or_create_subdir(self, path):
         return self._find_or_create_impl(split_path(path))
 
+class BlobFile:
+
+    def __init__(self, mode, ident, filename, parent):
+        self.mode = mode
+        self.ident = ident
+        self.filename = filename
+        self.parent_directory = parent
+
+    @property
+    def full_filename(self):
+        if self.parent_directory.full_path is None:
+            return self.filename
+        return os.path.join(self.parent_directory.full_path, self.filename)
+
+    def __repr__(self):
+        return '<%s %s %s>' % (self.mode, self.ident, self.full_filename)
+
+    def attributes_fullpath(self):
+        return (self.mode, self.ident, self.full_filename)
+
+    def attributes(self):
+        return (self.mode, self.ident, self.filename)
+
 def walk_tree(root_node):
     for child in root_node.subdirs:
         for node in walk_tree(child):
@@ -70,6 +94,25 @@ def build_tree(index):
         filename = os.path.basename(filename)
         subdir.add_file(mode, ident, filename)
     return root
+
+def read_tree(db, tree_ident, tree_name=None):
+    object_type, tree_contents = db.fetch(tree_ident)
+    assert object_type == darkwiki.DataType.TREE
+
+    tree = DirectoryTree(tree_name)
+
+    for mode, object_type, ident, filename in tree_contents:
+        if object_type == darkwiki.DataType.BLOB:
+            tree.add_file(mode, ident, filename)
+        elif object_type == darkwiki.DataType.TREE:
+            subtree = read_tree(db, ident, filename)
+            tree.add_subdir(subtree)
+
+    return tree
+
+def all_files(tree_root):
+    flatten = lambda lists: [item for sublist in lists for item in sublist]
+    return flatten(tree.files for tree in walk_tree(tree_root))
 
 if __name__ == '__main__':
     root = DirectoryTree()

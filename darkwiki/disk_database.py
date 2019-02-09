@@ -177,8 +177,8 @@ class DiskDatabase:
     def _create_tree(self, directory):
         description = ''
 
-        for mode, ident, filename in directory.files:
-            description += '%s BLOB %s %s\n' % (mode, ident, filename)
+        for blob_file in directory.files:
+            description += '%s BLOB %s %s\n' % blob_file.attributes()
         for subdir in directory.subdirs:
             description += '755 TREE %s %s\n' % (subdir.ident, subdir.name)
 
