@@ -248,3 +248,24 @@ class DiskDatabase:
         path = self._ref_path(reference)
         open(path, 'w').write(commit_ident)
 
+    def fetch_local_branches(self):
+        local_branches = os.listdir(self._ref_path('refs/heads/'))
+        return local_branches
+
+    def active_branch(self):
+        reference = self._get_current_ref()
+        assert reference.startswith('refs/heads/')
+        return reference[len('refs/heads/'):]
+
+    def switch_branch(self, branch_name, commit_ident):
+        self._write_HEAD('refs/heads/%s' % branch_name)
+        if commit_ident is not None:
+            last_commit = self.last_commit_ident()
+
+            self._write_to_ref(commit_ident)
+
+            self._update_files(last_commit, commit_ident)
+
+    def _update_files(self, last_commit, new_commit):
+        pass 
+

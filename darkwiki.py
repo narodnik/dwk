@@ -4,6 +4,7 @@ import darkwiki
 import json
 import os
 import sys
+from termcolor import colored
 
 def main():
     parser = argparse.ArgumentParser(prog='darkwiki')
@@ -72,6 +73,12 @@ def main():
     parser_diff.add_argument('commit_ident', nargs='?', default=None)
     parser_diff.set_defaults(func=diff)
 
+    # branch
+    parser_branch = subparsers.add_parser('branch')
+    parser_branch.add_argument('branch_name', nargs='?')
+    parser_branch.add_argument('commit_ident', nargs='?')
+    parser_branch.set_defaults(func=branch)
+
     args = parser.parse_args()
 
     if args.func is None:
@@ -84,6 +91,7 @@ def initialize(parser):
     os.mkdir('.darkwiki')
     db = darkwiki.DiskDatabase()
     db.initialize()
+    return 0
 
 def add_object(parser):
     data = open(parser.filename, 'rb').read()
@@ -180,6 +188,7 @@ def commit(parser):
         interface = darkwiki.Interface(db)
         interface.add_changed_files()
     db.commit()
+    return 0
 
 def log(parser):
     db = darkwiki.DiskDatabase()
@@ -193,6 +202,7 @@ def log(parser):
         print(commit['timestamp'], '+%s' % commit['utc_offset'])
         previous = commit['previous_commit']
         print()
+    return 0
 
 def diff(parser):
     db = darkwiki.DiskDatabase()
@@ -204,6 +214,31 @@ def diff(parser):
     for filename, diffs in diff_result:
         print('---', filename)
         darkwiki.print_diff(diffs)
+    return 0
+
+def branch(parser):
+    db = darkwiki.DiskDatabase()
+
+    if parser.branch_name is None:
+        display_branches(db)
+        return 0
+
+    ident = None
+    if parser.commit_ident is not None:
+        ident = db.fuzzy_match(parser.commit_ident)
+
+    db.switch_branch(parser.branch_name, ident)
+
+    return 0
+
+def display_branches(db):
+    branches = db.fetch_local_branches()
+    current_branch = db.active_branch()
+    for branch in branches:
+        if branch == current_branch:
+            print('*', colored(branch, 'green'))
+        else:
+            print(' ', branch)
 
 if __name__ == '__main__':
     sys.exit(main())

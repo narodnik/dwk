@@ -71,36 +71,10 @@ class DifferenceInterfaceCommit:
         assert object_type == darkwiki.DataType.COMMIT
 
         tree_root_ident = commit['tree']
-        return self._read_tree(tree_root_ident)
-
-    def _read_tree(self, tree_ident, tree_name=None):
-        object_type, tree_contents = self._db.fetch(tree_ident)
-        assert object_type == darkwiki.DataType.TREE
-
-        tree = darkwiki.DirectoryTree(tree_name)
-
-        for mode, object_type, ident, filename in tree_contents:
-            if object_type == darkwiki.DataType.BLOB:
-                tree.add_file(mode, ident, filename)
-            elif object_type == darkwiki.DataType.TREE:
-                subtree = self._read_tree(ident, filename)
-                tree.add_subdir(subtree)
-
-        return tree
+        return darkwiki.read_tree(self._db, tree_root_ident)
 
     def files_list(self):
-        files_list = [(directory.full_path, directory.files)
-                      for directory in darkwiki.walk_tree(self._tree)]
-        results = []
-        # Todo make a DirectoryFile object with the attribute
-        # full_filename
-        # Then no need for this weird outer loop design
-        for full_path, dir_files in files_list:
-            for mode, ident, filename in dir_files:
-                if full_path is not None:
-                    filename = os.path.join(full_path, filename)
-                results.append((mode, ident, filename))
-        return results
+        return [blob.attributes() for blob in darkwiki.all_files(self._tree)]
 
     def fetch(self, ident):
         object_type, contents = self._db.fetch(ident)
