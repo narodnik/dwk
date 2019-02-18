@@ -33,23 +33,29 @@ class DiskDatabase:
         self._root_path = find_root_path()
 
     @property
-    def _dot_path(self):
+    def dot_path(self):
         return os.path.join(self._root_path, '.darkwiki')
     @property
     def _objects_path(self):
-        return os.path.join(self._dot_path, 'objects')
+        return os.path.join(self.dot_path, 'objects')
     @property
     def _HEAD_path(self):
-        return os.path.join(self._dot_path, 'HEAD')
+        return os.path.join(self.dot_path, 'HEAD')
     @property
     def _index_filename(self):
-        return os.path.join(self._dot_path, 'index')
+        return os.path.join(self.dot_path, 'index')
 
     def _ref_path(self, ref):
-        return os.path.join(self._dot_path, ref)
+        return os.path.join(self.dot_path, ref)
+
+    def _object_path(self, ident):
+        return os.path.join(self._objects_path, ident)
 
     def _open_object(self, ident, flag):
-        return open(os.path.join(self._objects_path, ident), flag + 'b')
+        return open(self._object_path(ident), flag + 'b')
+
+    def exists(self, ident):
+        return os.path.isfile(self._object_path(ident))
 
     def transform_root_path(self, filename):
         return os.path.join(self._root_path, filename)
@@ -68,6 +74,7 @@ class DiskDatabase:
         os.mkdir(self._objects_path)
         self._write_HEAD('refs/heads/master')
         os.makedirs(self._ref_path('refs/heads/'))
+        os.makedirs(self._ref_path('refs/remotes/'))
         touch_file(self._index_filename)
 
     def _add_data(self, data, data_type):
@@ -225,7 +232,10 @@ class DiskDatabase:
         # lookup from ref in HEAD
         return self._get_ref_commit_ident(reference)
 
-    def commit(self):
+    def commit(self, reference=None):
+        if reference is None:
+            reference = self._get_current_ref()
+
         # write_tree()
         root_tree_ident = self.write_tree()
         # Make commit object
@@ -238,18 +248,16 @@ class DiskDatabase:
             'timestamp': unix_time,
             'utc_offset': utc_offset,
             # Previous commit
-            'previous_commit': self.last_commit_ident()
+            'previous_commit': self._get_ref_commit_ident(reference)
             # later we will add hash of pubkey for ID
         }
         data = json.dumps(commit).encode()
         commit_ident = self._add_data(data, DataType.COMMIT)
 
-        self._write_to_ref(commit_ident)
+        self._write_to_ref(reference, commit_ident)
         return commit_ident
 
-    def _write_to_ref(self, commit_ident):
-        # lookup current ref in HEAD
-        reference = self._get_current_ref()
+    def _write_to_ref(self, reference, commit_ident):
         # update refs/<...>
         path = self._ref_path(reference)
         open(path, 'w').write(commit_ident)
@@ -258,20 +266,39 @@ class DiskDatabase:
         local_branches = os.listdir(self._ref_path('refs/heads/'))
         return local_branches
 
+    def fetch_remotes(self):
+        remotes = os.listdir(self._ref_path('refs/remotes/'))
+        return remotes
+
+    def fetch_remote_branches(self, remote):
+        remote_path = os.path.join(self._ref_path('refs/remotes/'), remote)
+        remote_branches = os.listdir(remote_path)
+        return remote_branches
+
     def active_branch(self):
         reference = self._get_current_ref()
         assert reference.startswith('refs/heads/')
         return reference[len('refs/heads/'):]
 
-    def switch_branch(self, branch_name, commit_ident):
-        if commit_ident is not None:
-            last_commit = self.last_commit_ident()
+    def create_branch(self, branch_name, commit_ident):
+        assert branch_name not in self.fetch_local_branches()
 
-            self._write_to_ref(commit_ident)
+        reference = 'refs/heads/%s' % branch_name
+        self._write_to_ref(reference, commit_ident)
 
-            self._update_files(last_commit, commit_ident)
+    def switch_branch(self, branch_name):
+        assert branch_name in self.fetch_local_branches()
 
-        self._write_HEAD('refs/heads/%s' % branch_name)
+        reference = 'refs/heads/%s' % branch_name
+
+        previous_commit = self.last_commit_ident()
+        next_commit = self._get_ref_commit_ident(reference)
+
+        # Updating files when switching
+        self._update_files(previous_commit, next_commit)
+
+        # Modify current head
+        self._write_HEAD(reference)
 
     def _fetch_tree_ident(self, commit_ident):
         object_type, commit = self.fetch(commit_ident)
@@ -304,7 +331,16 @@ class DiskDatabase:
         for blob in new_files:
             object_type, contents = self.fetch(blob.ident)
             assert object_type == DataType.BLOB
-            self.open_file(blob.full_filename, 'w').write(contents)
+
+            self._write_file(blob, contents)
+
+    def _write_file(self, blob, contents):
+        try:
+            if blob.dirname is not None:
+                os.makedirs(blob.dirname)
+        except FileExistsError:
+            pass
+        self.open_file(blob.full_filename, 'w').write(contents)
 
     def _remove_empty_directories(self, previous_tree):
         # Iterate previous directories, if they are empty then delete them

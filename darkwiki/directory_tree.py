@@ -64,6 +64,10 @@ class BlobFile:
             return self.filename
         return os.path.join(self.parent_directory.full_path, self.filename)
 
+    @property
+    def dirname(self):
+        return self.parent_directory.full_path
+
     def __repr__(self):
         return '<%s %s %s>' % (self.mode, self.ident, self.full_filename)
 

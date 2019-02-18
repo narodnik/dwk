@@ -79,6 +79,26 @@ def main():
     parser_branch.add_argument('commit_ident', nargs='?')
     parser_branch.set_defaults(func=branch)
 
+    # random-secret
+    parser_random_secret = subparsers.add_parser('random-secret')
+    parser_random_secret.set_defaults(func=random_secret)
+
+    # to-public
+    parser_to_public = subparsers.add_parser('to-public')
+    parser_to_public.add_argument('secret')
+    parser_to_public.set_defaults(func=to_public)
+
+    # sync
+    parser_sync = subparsers.add_parser('sync')
+    parser_sync.add_argument('listen_port', type=int)
+    parser_sync.add_argument('secret')
+    parser_sync.set_defaults(func=sync)
+
+    # authorize
+    parser_authorize = subparsers.add_parser('authorize')
+    parser_authorize.add_argument('public_key')
+    parser_authorize.set_defaults(func=authorize)
+
     args = parser.parse_args()
 
     if args.func is None:
@@ -224,11 +244,16 @@ def branch(parser):
         display_branches(db)
         return 0
 
-    ident = None
-    if parser.commit_ident is not None:
+    if parser.commit_ident is None:
+        ident = db.last_commit_ident()
+    else:
         ident = db.fuzzy_match(parser.commit_ident)
 
-    db.switch_branch(parser.branch_name, ident)
+    if parser.branch_name not in db.fetch_local_branches():
+        db.create_branch(parser.branch_name, ident)
+        print('Created branch', parser.branch_name)
+
+    db.switch_branch(parser.branch_name)
 
     return 0
 
@@ -240,6 +265,39 @@ def display_branches(db):
             print('*', colored(branch, 'green'))
         else:
             print(' ', branch)
+
+def random_secret(parser):
+    secret = darkwiki.random_secret()
+    print(secret.hex())
+
+def to_public(parser):
+    secret = bytes.fromhex(parser.secret)
+    public = darkwiki.secret_to_public(secret)
+    print(public.hex())
+
+def sync(parser):
+    import asyncio
+
+    db = darkwiki.DiskDatabase()
+    interface = darkwiki.Interface(db)
+
+    listen_port = parser.listen_port
+    secret = bytes.fromhex(parser.secret)
+
+    public_key = darkwiki.secret_to_public(secret)
+    node_id = darkwiki.micronet.public_to_node_id(public_key)
+    print('Using node ID:', node_id)
+    print('  public_key =', public_key.hex())
+    print('  secret =', secret.hex())
+
+    node = darkwiki.micronet.Node(db, interface, node_id, listen_port, secret)
+    asyncio.get_event_loop().run_until_complete(node.start())
+
+def authorize(parser):
+    db = darkwiki.DiskDatabase()
+    keyring = darkwiki.micronet.Keyring(db)
+    public_key = bytes.fromhex(parser.public_key)
+    keyring.add_public_key(public_key)
 
 if __name__ == '__main__':
     sys.exit(main())
