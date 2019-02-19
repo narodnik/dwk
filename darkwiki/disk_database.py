@@ -109,6 +109,21 @@ class DiskDatabase:
             return None
         return match[0]
 
+    def add_object(self, object_, type_):
+        if type_ == DataType.BLOB:
+            data = object_
+        elif type_ == DataType.TREE:
+            description = ''
+            for mode, subtype_, ident, filename in object_:
+                description += '%s %s %s %s\n' % (mode, subtype_.name,
+                                                  ident, filename)
+            data = description.encode()
+        else:
+            assert type_ == DataType.COMMIT
+            data = json.dumps(object_).encode()
+
+        return self._add_data(data, type_)
+
     def fetch(self, ident):
         data = self._open_object(ident, 'r').read()
         header = data.split(b':')[0]
@@ -175,7 +190,9 @@ class DiskDatabase:
 
     def _create_subtrees(self, index):
         root = darkwiki.build_tree(index)
+        return self.write_dirtree(root)
 
+    def write_dirtree(self, root):
         for directory in darkwiki.walk_tree(root):
             assert not [subdir for subdir in directory.subdirs
                         if subdir.ident is None]
@@ -232,12 +249,21 @@ class DiskDatabase:
         # lookup from ref in HEAD
         return self._get_ref_commit_ident(reference)
 
-    def commit(self, reference=None):
+    def branch_last_commit_ident(self, branch):
+        reference = 'refs/heads/%s' % branch
+        return self._get_ref_commit_ident(reference)
+
+    def branch_remote_last_commit_ident(self, remote, branch):
+        reference = 'refs/remotes/%s/%s' % (remote, branch)
+        return self._get_ref_commit_ident(reference)
+
+    def commit(self, reference=None, root_tree_ident=None):
         if reference is None:
             reference = self._get_current_ref()
 
         # write_tree()
-        root_tree_ident = self.write_tree()
+        if root_tree_ident is None:
+            root_tree_ident = self.write_tree()
         # Make commit object
         utc_offset = time.localtime().tm_gmtoff
         unix_time = int(time.time())
@@ -261,6 +287,18 @@ class DiskDatabase:
         # update refs/<...>
         path = self._ref_path(reference)
         open(path, 'w').write(commit_ident)
+
+    def write_remote_ref(self, remote_public_key, branch, commit_ident):
+        path = 'refs/remotes/%s/' % remote_public_key
+        reference = '%s/%s' % (path, branch)
+
+        path = self._ref_path(path)
+        try:
+            os.makedirs(path)
+        except FileExistsError:
+            pass
+
+        self._write_to_ref(reference, commit_ident)
 
     def fetch_local_branches(self):
         local_branches = os.listdir(self._ref_path('refs/heads/'))

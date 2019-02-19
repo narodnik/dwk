@@ -149,7 +149,7 @@ class Channel:
     def __init__(self, parent, address, public_key):
         self._parent = parent
         self._address = address
-        self._public_key = public_key
+        self.public_key = public_key
 
         self.identity = '%d:%s' % (parent.id, public_key.hex())
 
@@ -175,14 +175,14 @@ class Channel:
             ciphertext = ciphertext[0]
 
             message = darkwiki.decrypt_verify(
-                ciphertext, self._public_key, self._parent.secret)
+                ciphertext, self.public_key, self._parent.secret)
 
             if message is not None:
                 return message
 
     def send(self, message):
         ciphertext = darkwiki.encrypt_sign(
-            message, self._parent.secret, self._public_key)
+            message, self._parent.secret, self.public_key)
 
         self._parent.send([ciphertext])
 
@@ -324,6 +324,10 @@ class Protocol:
     def interface(self):
         return self._channel._parent.interface
 
+    @property
+    def remote_public_key(self):
+        return self._channel.public_key
+
     async def start(self):
         self.send('hello')
 
@@ -337,14 +341,18 @@ class Protocol:
 
     def _process(self, message):
         if message.command == 'hello':
-            self.send('sync', self._commit_idents())
+            tips = self.interface.branches_tips()
+            self.send('sync', tips)
 
         elif message.command == 'sync':
-            local_commit_idents = self._commit_idents()
+            remote_tips = message.tips
 
-            for remote_commit_ident in message.commits:
-                if remote_commit_ident not in local_commit_idents:
-                    self.send('fetch', remote_commit_ident)
+            # First write remote tips
+            for branch, commit_ident in remote_tips.items():
+                self.db.write_remote_ref(self.remote_public_key.hex(),
+                                         branch, commit_ident)
+
+            self._request_missing_objects()
 
         elif message.command == 'fetch':
             ident = message.object_ident
@@ -354,23 +362,30 @@ class Protocol:
             self.send('object', ident, object_type, object_)
 
         elif message.command == 'object':
-            if self._pool.exists(message.ident):
-                return
             print('object:', message.ident)
+            self.db.add_object(message.object, message.object_type)
 
-            self._pool.add(message.ident, message.object_type, message.object)
+            self._request_missing_objects()
 
-            missing_objects = self._pool.resolve()
+    def _request_missing_objects(self):
+        local_tips = self.interface.branches_tips()
 
-            for ident in missing_objects:
-                print('Fetching', ident)
-                self.send('fetch', ident)
+        remote = self.remote_public_key.hex()
+        for branch in self.db.fetch_remote_branches(remote):
+            commit_ident = self.db.branch_remote_last_commit_ident(
+                remote, branch)
 
-            self._pool.rebase()
+            missing = self.interface.resolve_missing_objects(commit_ident)
 
-        # TODO: respond with tip of latest branch after receiving hello
-        # TODO: finish script to start multiple instances that are running
-        # and just start stop one node, practice syncing
+            [self.send('fetch', ident) for ident in missing]
+
+            if not missing and branch in local_tips:
+                local_last = local_tips[branch]
+                if local_last != commit_ident:
+                    self._attempt_merge(branch)
+
+    def _attempt_merge(self, branch):
+        print('Attempting merge:', branch, self.remote_public_key.hex())
 
     def _commit_idents(self):
         commits = self.interface.fetch_commits()
@@ -404,26 +419,34 @@ class SyncMessage:
 
     command = 'sync'
 
-    def __init__(self, commits):
-        self.commits = commits
+    def __init__(self, tips):
+        self.tips = tips
 
     @classmethod
     def from_data(cls, data):
         deserial = darkwiki.Deserializer(data)
 
         try:
-            commits_size = deserial.read_4_bytes()
-            commits = [deserial.read_data().hex() for _ in range(commits_size)]
+            tips_size = deserial.read_4_bytes()
+
+            tips = {}
+            for _ in range(tips_size):
+                branch = deserial.read_string()
+                commit_ident = deserial.read_data().hex()
+
+                tips[branch] = commit_ident
+
         except darkwiki.DeserialError:
             return None
 
-        return cls(commits)
+        return cls(tips)
 
     def to_data(self):
         serial = darkwiki.Serializer()
-        serial.write_4_bytes(len(self.commits))
-        for commit in self.commits:
-            commit_ident = bytes.fromhex(commit)
+        serial.write_4_bytes(len(self.tips))
+        for branch, commit_ident in self.tips.items():
+            serial.write_string(branch)
+            commit_ident = bytes.fromhex(commit_ident)
             serial.write_data(commit_ident)
         return serial.result()
 

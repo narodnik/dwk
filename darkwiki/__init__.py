@@ -7,5 +7,6 @@ from darkwiki.disk_database import DataType, DiskDatabase
 from darkwiki.directory_tree import DirectoryTree, build_tree, \
                                     read_tree, all_files, walk_tree
 from darkwiki.interface import Interface
+from darkwiki.merge_engine import MergeInterface, MergeEngine
 from darkwiki.serialize import DeserialError, Deserializer, Serializer
 

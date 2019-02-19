@@ -99,6 +99,11 @@ def main():
     parser_authorize.add_argument('public_key')
     parser_authorize.set_defaults(func=authorize)
 
+    # merge
+    parser_merge = subparsers.add_parser('merge')
+    parser_merge.add_argument('branch')
+    parser_merge.set_defaults(func=merge)
+
     args = parser.parse_args()
 
     if args.func is None:
@@ -269,11 +274,13 @@ def display_branches(db):
 def random_secret(parser):
     secret = darkwiki.random_secret()
     print(secret.hex())
+    return 0
 
 def to_public(parser):
     secret = bytes.fromhex(parser.secret)
     public = darkwiki.secret_to_public(secret)
     print(public.hex())
+    return 0
 
 def sync(parser):
     import asyncio
@@ -298,6 +305,23 @@ def authorize(parser):
     keyring = darkwiki.micronet.Keyring(db)
     public_key = bytes.fromhex(parser.public_key)
     keyring.add_public_key(public_key)
+    return 0
+
+def merge(parser):
+    db = darkwiki.DiskDatabase()
+    interface = darkwiki.Interface(db)
+
+    current_branch = db.active_branch()
+    merge_branch = parser.branch
+
+    if merge_branch not in db.fetch_local_branches():
+        print('error: merge branch does not exist', file=sys.stderr)
+        return -1
+
+    commit_ident = interface.merge(current_branch, merge_branch)
+    print(commit_ident)
+
+    return 0
 
 if __name__ == '__main__':
     sys.exit(main())
